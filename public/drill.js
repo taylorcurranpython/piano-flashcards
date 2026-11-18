@@ -134,7 +134,6 @@ function requeue(id, rating) {
   const [lo, hi] = rating === 'Again' ? [2, 4] : [5, 8];
   const at = Math.min(S.queue.length, lo + Math.floor(Math.random() * (hi - lo + 1)));
   S.queue.splice(Math.max(1, at), 0, id);
-  if (S.queue.length === 1 && S.queue[0] === id) S.queue.push(id);
 }
 const fmt = ms => (ms / 1000).toFixed(1) + 's';
 function next() {
@@ -159,7 +158,7 @@ function markOnset(ts) {
   S.onset = Math.max(ts, S.t0); clearInterval(S.tick); $('timer').textContent = fmt(S.onset - S.t0);
 }
 function answer(letter, engine) {
-  if (S.state !== 'ask') return;
+  if (S.state !== 'ask' || !S.active || !S.id) return;
   if (S.onset === null) { const s0 = voice.speechStart(S.t0); markOnset(engine !== 'key' && s0 != null ? s0 : performance.now()); }
   S.state = 'graded';
   const card = S.cur, ms = Math.round(S.onset - S.t0), correct = letter === card.letter;
@@ -172,18 +171,22 @@ function answer(letter, engine) {
   api('answer', {practice_id: S.id, card_id: card.id, answer: letter, ms, engine}).catch(e => { $('heard').textContent = 'not saved: ' + e.message; });
   setTimeout(next, correct ? 650 : 1800);
 }
+function stop() { S.active = false; S.state = 'idle'; clearInterval(S.tick); }
 async function finish() {
-  if (!S.id) return;
-  S.active = false; S.state = 'idle'; clearInterval(S.tick);
+  stop();
+  if (!S.id) return home();
   const sid = S.id; S.id = null;
+  if (!S.answered.length) { api('finish', {practice_id: sid}).catch(() => {}); return home(); }
   let res = null;
   try { res = await api('finish', {practice_id: sid}); } catch (e) { $('doneSub').textContent = 'Could not save the session: ' + e.message; }
   await loadState().catch(() => {});
-  // First answer per card is what FSRS graded; repeats are in-session reinforcement.
+  // Summary uses each card's first answer. Every answer, repeats included, is an FSRS review: FSRS uses
+  // same-day reviews as learning steps, so a miss then a fast retry is scheduled sooner than a clean pass.
   const first = {};
   S.answered.forEach(a => { if (!first[a.id]) first[a.id] = a; });
   const firsts = Object.values(first), ok = firsts.filter(a => a.correct);
-  const med = ok.length ? ok.map(a => a.ms).sort((a, b) => a - b)[Math.floor(ok.length / 2)] : null;
+  const times = ok.map(a => a.ms).sort((a, b) => a - b), mid = Math.floor(times.length / 2);
+  const med = times.length ? Math.round((times[mid] + times[Math.floor((times.length - 1) / 2)]) / 2) : null;
   $('doneHead').textContent = `${ok.length}/${firsts.length} right first time${med ? ` · median ${fmt(med)}` : ''}`;
   if (res) $('doneSub').textContent = `${S.answered.length} answers including repeats.`;
   $('doneGrid').innerHTML = '';
@@ -198,7 +201,7 @@ function cell(c, cls, sub) {
 $('startBtn').onclick = () => start(false);
 $('practiceBtn').onclick = () => start(true);
 $('homeBtn').onclick = home;
-$('endBtn').onclick = () => S.answered.length ? finish() : (S.active = false, S.id = null, home());
+$('endBtn').onclick = finish;
 window.addEventListener('pagehide', () => { if (S.id && S.answered.length) api('finish', {practice_id: S.id}).catch(() => {}); });
 document.addEventListener('keydown', e => {
   if (S.state === 'ask' && /^[a-g]$/i.test(e.key) && !e.metaKey && !e.ctrlKey) { markOnset(performance.now()); answer(e.key.toUpperCase(), 'key'); }
@@ -270,6 +273,8 @@ const voice = {
   },
   heard(text, final) {
     if (S.state !== 'ask') return;
+    // A result for speech that began before this note (e.g. Vosk finishing the previous answer late) is stale.
+    if (this.speechStart(S.t0) == null) return;
     const L = toLetter(text);
     $('heard').textContent = text ? `heard “${text}”` : '';
     if (L) answer(L, voice.engine);

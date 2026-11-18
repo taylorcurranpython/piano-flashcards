@@ -169,23 +169,58 @@ function markOnset(ts) {
 }
 function answer(letter, engine) {
   if (S.state !== 'ask' || !S.active || !S.id) return;
-  if (S.onset === null) { const s0 = voice.speechStart(S.t0); markOnset(engine !== 'key' && s0 != null ? s0 : performance.now()); }
+  // Time voice answers from the start of the sound burst the recognized word came from, not from the first
+  // noise after the note appeared (a cough or click would otherwise freeze the clock early).
+  const s0 = engine === 'key' ? null : voice.speechStart(S.t0);
+  if (s0 != null) { S.onset = null; markOnset(s0); }
+  else if (S.onset === null) markOnset(performance.now());
   S.state = 'graded';
   const card = S.cur, ms = Math.round(S.onset - S.t0), correct = letter === card.letter;
-  const rating = !correct ? 'Again' : ms > cfg.good_ms ? 'Hard' : ms > cfg.easy_ms ? 'Good' : 'Easy';
-  S.answered.push({id: card.id, letter, ms, correct, rating});
-  $('fb').className = rating;
-  $('fb').textContent = correct ? `${card.letter} · ${fmt(ms)}` : `${letter} ✗ — it's ${card.letter}${card.octave}`;
-  $('fb').dataset.rating = rating;
-  if (rating === 'Again' || rating === 'Hard') requeue(card.id, rating);
-  api('answer', {practice_id: S.id, card_id: card.id, answer: letter, ms, engine}).catch(e => { $('heard').textContent = 'not saved: ' + e.message; });
+  const a = {id: card.id, letter, ms, correct, rating: rateOf(correct, ms)};
+  S.answered.push(a);
+  showGrade(card, a);
+  if (a.rating === 'Again' || a.rating === 'Hard') requeue(card.id, a.rating);
+  if (S.pending) commit(S.pending);
+  // Vosk's final result says when the word itself began; until it arrives (or 1.5 s pass) the answer isn't
+  // saved, so a noise burst that speechStart picked after the word can still be corrected.
+  const p = {a, card, engine, practice: S.id, t0: S.t0, bursts: voice.vad.bursts};
+  if (engine === 'vosk') { S.pending = p; p.timer = setTimeout(() => commit(p), 1500); } else commit(p);
   setTimeout(next, correct ? 650 : 1800);
+}
+const rateOf = (correct, ms) => !correct ? 'Again' : ms > cfg.good_ms ? 'Hard' : ms > cfg.easy_ms ? 'Good' : 'Easy';
+function showGrade(card, a) {
+  $('fb').className = a.rating;
+  $('fb').textContent = a.correct ? `${card.letter} · ${fmt(a.ms)}` : `${a.letter} ✗ — it's ${card.letter}${card.octave}`;
+  $('fb').dataset.rating = a.rating;
+}
+function commit(p) {
+  if (p.saved) return p.saved;
+  clearTimeout(p.timer); if (S.pending === p) S.pending = null;
+  const a = p.a;
+  return p.saved = api('answer', {practice_id: p.practice, card_id: a.id, answer: a.letter, ms: a.ms, engine: p.engine})
+    .catch(e => { $('heard').textContent = 'not saved: ' + e.message; });
+}
+// Word start from Vosk (performance.now() time): re-time the pending answer from the sound burst that word began in.
+function correctOnset(letter, wordStart) {
+  const p = S.pending;
+  if (!p || p.a.letter !== letter || wordStart < p.t0 - 30) return;
+  const b = p.bursts.filter(t => t >= p.t0 - 30 && t <= wordStart + 100).pop();
+  const ms = Math.round(Math.max(b ?? wordStart, p.t0) - p.t0);
+  if (ms !== p.a.ms) {
+    const was = p.a.rating;
+    p.a.ms = ms; p.a.rating = rateOf(p.a.correct, ms);
+    // The word can only start earlier than the guess, so a Hard can become Good/Easy: take back its retry.
+    if (was === 'Hard' && p.a.rating !== 'Hard') { const i = S.queue.indexOf(p.a.id); if (i >= 0) S.queue.splice(i, 1); }
+    if (S.cur === p.card && S.state === 'graded') { showGrade(p.card, p.a); $('timer').textContent = fmt(ms); }
+  }
+  commit(p);
 }
 function stop() { S.active = false; S.state = 'idle'; S.go = null; clearInterval(S.tick); }
 async function finish() {
   stop();
   if (!S.id) return home();
   const sid = S.id; S.id = null;
+  if (S.pending) await commit(S.pending);
   if (!S.answered.length) { api('finish', {practice_id: sid}).catch(() => {}); return home(); }
   let res = null;
   try { res = await api('finish', {practice_id: sid}); } catch (e) { $('doneSub').textContent = 'Could not save the session: ' + e.message; }
@@ -212,7 +247,10 @@ $('startBtn').onclick = () => start(false);
 $('practiceBtn').onclick = () => start(true);
 $('homeBtn').onclick = home;
 $('endBtn').onclick = finish;
-window.addEventListener('pagehide', () => { if (S.id && S.answered.length) api('finish', {practice_id: S.id}).catch(() => {}); });
+window.addEventListener('pagehide', () => {
+  if (S.pending) commit(S.pending);
+  if (S.id && S.answered.length) api('finish', {practice_id: S.id}).catch(() => {});
+});
 document.addEventListener('keydown', e => {
   if (S.state === 'ask' && /^[a-g]$/i.test(e.key) && !e.metaKey && !e.ctrlKey) { markOnset(performance.now()); answer(e.key.toUpperCase(), 'key'); }
 });
@@ -255,8 +293,8 @@ const modelUrl = async () => params.get('model') ||
     ? new URL('models/' + MODEL_FILE, location.href).href : 'https://ccoreilly.github.io/vosk-browser/models/' + MODEL_FILE);
 
 const voice = {
-  on: false, engine: null, vad: {floor: 0.005, active: false, start: null, lastStart: null, quiet: 0},
-  reset() { const v = this.vad; v.lastStart = null; if (!v.active) v.start = null; },
+  on: false, engine: null, vad: {floor: 0.005, active: false, start: null, lastStart: null, quiet: 0, bursts: []},
+  reset() { const v = this.vad; v.lastStart = null; v.bursts = []; if (!v.active) v.start = null; },
   // Start of the speech that produced the current result: the ongoing burst, else the last one since t0.
   speechStart(t0) { const v = this.vad; const s = v.active ? v.start : v.lastStart; return s != null && s >= t0 - 30 ? s : null; },
   // Energy-based speech onset. Works on ~5 ms blocks; once speech is detected it walks back over the
@@ -274,12 +312,16 @@ const voice = {
           let start = t;
           const soft = Math.max(0.003, v.floor * 1.5);
           for (let i = this.hist.length - 2; i >= 0 && this.hist[i][1] > soft && t - this.hist[i][0] < 300; i--) start = this.hist[i][0];
-          v.active = true; v.start = start; v.quiet = 0;
-          if (S.state === 'ask') markOnset(start);
+          v.active = true; v.start = start; v.quiet = 0; v.bursts.push(start);
         }
       } else if (rms < Math.max(0.008, v.floor * 2)) { v.quiet += blockMs; if (v.quiet > 300) { v.active = false; v.lastStart = v.start; } }
       else v.quiet = 0;
     }
+  },
+  // performance.now() time of a position (seconds of audio fed) in the Vosk stream.
+  audioTime(sec) {
+    const c = (this.chunks || []).filter(([s]) => s <= sec).pop();
+    return c ? c[1] + (sec - c[0]) * 1000 : null;
   },
   heard(text, final) {
     if (S.state !== 'ask') return;
@@ -314,10 +356,25 @@ const voice = {
     const model = await Vosk.createModel(await modelUrl());
     const grammar = JSON.stringify([...Object.keys(MAP), '[unk]']);
     const rec = new model.KaldiRecognizer(16000, grammar);
-    rec.on('result', m => this.heard(m.result.text, true));
+    rec.setWords(true);
+    rec.on('result', m => {
+      this.heard(m.result.text, true);
+      for (const w of m.result.result || []) {
+        const L = toLetter(w.word), t = this.audioTime(w.start);
+        if (L && t != null) { correctOnset(L, t); break; }
+      }
+    });
     rec.on('partialresult', m => { if (m.result.partial) this.heard(m.result.partial, false); });
     const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
-    node.onaudioprocess = ev => { this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate); try { rec.acceptWaveform(ev.inputBuffer); } catch (e) { console.error(e); } };
+    let fed = 0;
+    this.chunks = [];
+    node.onaudioprocess = ev => {
+      const buf = ev.inputBuffer;
+      this.chunks.push([fed, performance.now() - buf.duration * 1000]); if (this.chunks.length > 400) this.chunks.shift();
+      fed += buf.duration;
+      this.feed(buf.getChannelData(0), ctx.sampleRate);
+      try { rec.acceptWaveform(buf); } catch (e) { console.error(e); }
+    };
     src.connect(node); node.connect(ctx.destination);
     this.engine = 'vosk'; $('heard').textContent = '';
   },

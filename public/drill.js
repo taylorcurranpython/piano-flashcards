@@ -255,8 +255,8 @@ const modelUrl = async () => params.get('model') ||
     ? new URL('models/' + MODEL_FILE, location.href).href : 'https://ccoreilly.github.io/vosk-browser/models/' + MODEL_FILE);
 
 // Vosk.createModel never settles when the download fails, so watch for failure ourselves and stop the worker if it does.
-// The probe is a real GET (cancelled after the status) allowed to come from the HTTP cache; a network error alone
-// doesn't fail, because the model may already be cached.
+// The probe is a real GET (cancelled after the status). A network error, or an HTTP error while the model is already
+// cached, doesn't fail the load.
 function loadModel(url, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const m = new Vosk.Model(url);
@@ -275,9 +275,32 @@ function loadModel(url, timeoutMs = 120000) {
     });
     m.on('error', msg => fail(msg.error || 'worker error'));
     m.worker.addEventListener('error', e => fail(e.message || 'worker error'));
-    fetch(url, {cache: 'force-cache'}).then(r => { r.body?.cancel().catch(() => {}); if (!r.ok) fail('HTTP ' + r.status); }).catch(() => {});
+    fetch(url, {cache: 'force-cache'}).then(async r => {
+      r.body?.cancel().catch(() => {});
+      if (!r.ok && !(await modelCached(url))) fail('HTTP ' + r.status);
+    }).catch(() => {});
   });
 }
+// Vosk keeps the extracted model in the IndexedDB database "/vosk" (Emscripten IDBFS), keyed by file path,
+// so a model in there loads even while its host is down.
+function modelCached(url) {
+  const dir = '/vosk/' + url.replace(/[\W]/g, '_') + '/';
+  return new Promise(resolve => {
+    let req;
+    try { req = indexedDB.open('/vosk'); } catch { return resolve(false); }
+    req.onupgradeneeded = () => req.transaction.abort();
+    req.onerror = () => resolve(false);
+    req.onsuccess = () => {
+      const db = req.result;
+      try {
+        const get = db.transaction('FILE_DATA').objectStore('FILE_DATA').getKey(IDBKeyRange.bound(dir, dir + '\uffff'));
+        get.onsuccess = () => { db.close(); resolve(get.result !== undefined); };
+        get.onerror = () => { db.close(); resolve(false); };
+      } catch { db.close(); resolve(false); }
+    };
+  });
+}
+
 function release(stream, ctx) { stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {}); }
 const voice = {
   on: false, engine: null, vad: {floor: 0.005, active: false, start: null, lastStart: null, quiet: 0},

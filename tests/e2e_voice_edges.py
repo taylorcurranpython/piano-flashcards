@@ -2,7 +2,8 @@
 
   1. The voice model fails to download: Start returns home with a message, and every mic stream and Vosk
      worker it started is stopped, including on a retry.
-  2. Browser speech engine (?engine=browser) with speech too quiet for the energy detector: the recognizer's
+  2. The model host is down (HTTP 503) but the model is already in Vosk's IndexedDB cache: Start still works.
+  3. Browser speech engine (?engine=browser) with speech too quiet for the energy detector: the recognizer's
      own speech-start event times the answer and the answer is graded.
 Run:  python -m tests.e2e_voice_edges   (CHROME=/path/to/chrome optional)
 """
@@ -58,6 +59,29 @@ def model_fails(browser, base):
     page.close()
 
 
+def cached_model_host_down(browser, base):
+    ctx = browser.new_context()
+    query = f"?model={base}/models/vosk-model-small-en-us-0.15.tar.gz"
+    page = ctx.new_page()
+    page.add_init_script(SILENT_MIC)
+    login(page, base, query)
+    page.click("#startBtn")
+    page.wait_for_selector("#staff svg", timeout=120_000)
+    page.close()
+    page = ctx.new_page()
+    page.add_init_script(SILENT_MIC)
+    hits = []
+    page.route(re.compile(r"^[^?]*/models/vosk-model[^/]*\.tar\.gz$"),
+               lambda r: (hits.append(r.request.method), r.fulfill(status=503, body="down")))
+    page.goto(f"{base}/{query}")
+    page.wait_for_selector("#homeView:not(.hidden) .scope")
+    page.click("#startBtn")
+    page.wait_for_selector("#staff svg", timeout=60_000)
+    print(f"  model host answered 503 to {hits}; drill started from the cached model")
+    assert hits
+    ctx.close()
+
+
 def quiet_browser_answer(browser, base):
     page = browser.new_page()
     page.add_init_script(SILENT_MIC)
@@ -86,6 +110,7 @@ def main():
                 browser = pw.chromium.launch(executable_path=os.environ.get("CHROME") or None)
                 base = f"http://127.0.0.1:{port}"
                 print("model download fails:"); model_fails(browser, base)
+                print("cached model, host down:"); cached_model_host_down(browser, base)
                 print("browser engine, quiet answer:"); quiet_browser_answer(browser, base)
                 browser.close()
         finally:

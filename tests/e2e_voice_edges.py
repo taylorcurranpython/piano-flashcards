@@ -1,7 +1,7 @@
 """Browser checks for voice failure and fallback paths.
 
-  1. The voice model fails to download: Start returns home with a message, and every mic stream it opened
-     is stopped, including on a retry.
+  1. The voice model fails to download: Start returns home with a message, and every mic stream and Vosk
+     worker it started is stopped, including on a retry.
   2. Browser speech engine (?engine=browser) with speech too quiet for the energy detector: the recognizer's
      own speech-start event times the answer and the answer is graded.
 Run:  python -m tests.e2e_voice_edges   (CHROME=/path/to/chrome optional)
@@ -49,8 +49,11 @@ def model_fails(browser, base):
         page.wait_for_function("document.getElementById('homeMsg').textContent.includes('Voice is needed')")
         live = page.evaluate("window.__streams.flatMap(s => s.getTracks()).filter(t => t.readyState === 'live').length")
         opened = page.evaluate("window.__streams.length")
-        print(f"  attempt {attempt}: {opened} streams opened, {live} live tracks; message: {page.text_content('#homeMsg')}")
-        assert opened == attempt and live == 0
+        page.wait_for_timeout(300)
+        workers = len(page.workers)
+        print(f"  attempt {attempt}: {opened} streams opened, {live} live tracks, {workers} live workers; "
+              f"message: {page.text_content('#homeMsg')}")
+        assert opened == attempt and live == 0 and workers == 0
     assert not page.query_selector("#staff svg") or page.is_hidden("#drillView")
     page.close()
 

@@ -254,16 +254,28 @@ const modelUrl = async () => params.get('model') ||
   (await fetch('models/' + MODEL_FILE, {method: 'HEAD'}).then(r => r.ok).catch(() => false)
     ? new URL('models/' + MODEL_FILE, location.href).href : 'https://ccoreilly.github.io/vosk-browser/models/' + MODEL_FILE);
 
-// Vosk.createModel never settles when the download fails, so check the URL first and listen for errors.
-async function loadModel(url) {
-  const head = await fetch(url, {method: 'HEAD'}).catch(() => null);
-  if (!head || !head.ok) throw new Error(`voice model unavailable (${head ? head.status : 'network error'})`);
+// Vosk.createModel never settles when the download fails, so watch for failure ourselves and stop the worker if it does.
+// The probe is a real GET (cancelled after the status) allowed to come from the HTTP cache; a network error alone
+// doesn't fail, because the model may already be cached.
+function loadModel(url, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const m = new Vosk.Model(url);
-    const fail = why => { try { m.terminate(); } catch {} reject(new Error('voice model failed to load: ' + why)); };
-    m.on('load', msg => msg.result ? resolve(m) : fail('load error'));
+    let done = false;
+    const timer = setTimeout(() => fail('timed out'), timeoutMs);
+    const fail = why => {
+      if (done) return; done = true; clearTimeout(timer);
+      try { m.terminate(); } catch {}
+      try { m.worker.terminate(); } catch {}
+      reject(new Error('voice model failed to load: ' + why));
+    };
+    m.on('load', msg => {
+      if (done) return;
+      if (!msg.result) return fail('load error');
+      done = true; clearTimeout(timer); resolve(m);
+    });
     m.on('error', msg => fail(msg.error || 'worker error'));
     m.worker.addEventListener('error', e => fail(e.message || 'worker error'));
+    fetch(url, {cache: 'force-cache'}).then(r => { r.body?.cancel().catch(() => {}); if (!r.ok) fail('HTTP ' + r.status); }).catch(() => {});
   });
 }
 function release(stream, ctx) { stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {}); }

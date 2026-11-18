@@ -32,6 +32,22 @@ Optional: `ACCESS_TOKEN=...` makes the page ask for that token once per device. 
 **Phones:** browsers only allow the microphone on `https://` or `localhost`, so opening `http://<laptop-ip>:8000` on
 a phone won't get the mic. Put it behind HTTPS, e.g. `tailscale serve 8000`, or Caddy with a real domain.
 
+## Vercel
+
+The repo also deploys to Vercel as-is (Python runtime, entrypoint in `pyproject.toml`). Connect it once and every pull
+request gets its own preview URL, with production at `<project>.vercel.app`. Vercel serves `public/` from its CDN. The
+voice model isn't in git, so the page loads it from the vosk-browser CDN (one-time ~40 MB per device).
+
+One-time setup in Vercel:
+1. **Add New → Project → import `piano-flashcards`**. Leave the framework preset on "Other" and the build settings empty.
+2. **Storage → Neon Postgres → connect to the project.** It sets `DATABASE_URL`. Untick Preview if previews shouldn't
+   write to your real history. Without `DATABASE_URL`, a deployment uses a throwaway SQLite file in `/tmp` that resets
+   whenever the function restarts. That's fine for trying a preview, not for keeping history.
+3. **Settings → Environment Variables:** add `ACCESS_TOKEN` for Production, since the URL is public.
+
+Previews sit behind Vercel's login by default (Deployment Protection), which also keeps them private. The mic works
+there because every Vercel URL is HTTPS.
+
 ## Tests
 
 ```bash

@@ -38,6 +38,7 @@ a phone won't get the mic. Put it behind HTTPS, e.g. `tailscale serve 8000`, or 
 pip install -r requirements-dev.txt
 python -m tests.test_api      # catalog, grading, FSRS scheduling, auth
 python -m tests.e2e_voice     # needs Chrome: CHROME=/path/to/chrome or `playwright install chromium`
+python -m tests.e2e_voice_edges   # model download failure frees the mic; quiet answers with ?engine=browser
 ```
 
 `e2e_voice` plays recorded spoken note names (`tests/audio/`) into headless Chrome as its microphone. It runs the real

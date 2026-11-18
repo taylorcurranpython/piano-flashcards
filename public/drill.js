@@ -254,6 +254,19 @@ const modelUrl = async () => params.get('model') ||
   (await fetch('models/' + MODEL_FILE, {method: 'HEAD'}).then(r => r.ok).catch(() => false)
     ? new URL('models/' + MODEL_FILE, location.href).href : 'https://ccoreilly.github.io/vosk-browser/models/' + MODEL_FILE);
 
+// Vosk.createModel never settles when the download fails, so check the URL first and listen for errors.
+async function loadModel(url) {
+  const head = await fetch(url, {method: 'HEAD'}).catch(() => null);
+  if (!head || !head.ok) throw new Error(`voice model unavailable (${head ? head.status : 'network error'})`);
+  return new Promise((resolve, reject) => {
+    const m = new Vosk.Model(url);
+    const fail = why => { try { m.terminate(); } catch {} reject(new Error('voice model failed to load: ' + why)); };
+    m.on('load', msg => msg.result ? resolve(m) : fail('load error'));
+    m.on('error', msg => fail(msg.error || 'worker error'));
+    m.worker.addEventListener('error', e => fail(e.message || 'worker error'));
+  });
+}
+function release(stream, ctx) { stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {}); }
 const voice = {
   on: false, engine: null, vad: {floor: 0.005, active: false, start: null, lastStart: null, quiet: 0},
   reset() { const v = this.vad; v.lastStart = null; if (!v.active) v.start = null; },
@@ -284,7 +297,8 @@ const voice = {
   heard(text, final) {
     if (S.state !== 'ask') return;
     // A result for speech that began before this note (e.g. Vosk finishing the previous answer late) is stale.
-    if (this.speechStart(S.t0) == null) return;
+    // S.onset is only ever set during this note, so it also covers speech too quiet for the VAD.
+    if (S.onset === null && this.speechStart(S.t0) == null) return;
     const L = toLetter(text);
     $('heard').textContent = text ? `heard “${text}”` : '';
     if (L) answer(L, voice.engine);
@@ -309,30 +323,36 @@ const voice = {
     $('heard').textContent = 'Allow the microphone to start…';
     const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1}});
     const ctx = new AudioContext();
-    if (ctx.state === 'suspended') await ctx.resume();
-    $('heard').textContent = 'Loading voice model (one-time ~40 MB)…';
-    const model = await Vosk.createModel(await modelUrl());
-    const grammar = JSON.stringify([...Object.keys(MAP), '[unk]']);
-    const rec = new model.KaldiRecognizer(16000, grammar);
-    rec.on('result', m => this.heard(m.result.text, true));
-    rec.on('partialresult', m => { if (m.result.partial) this.heard(m.result.partial, false); });
-    const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
-    node.onaudioprocess = ev => { this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate); try { rec.acceptWaveform(ev.inputBuffer); } catch (e) { console.error(e); } };
-    src.connect(node); node.connect(ctx.destination);
+    try {
+      if (ctx.state === 'suspended') await ctx.resume();
+      $('heard').textContent = 'Loading voice model (one-time ~40 MB)…';
+      const model = await loadModel(await modelUrl());
+      const grammar = JSON.stringify([...Object.keys(MAP), '[unk]']);
+      const rec = new model.KaldiRecognizer(16000, grammar);
+      rec.on('result', m => this.heard(m.result.text, true));
+      rec.on('partialresult', m => { if (m.result.partial) this.heard(m.result.partial, false); });
+      const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = ev => { this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate); try { rec.acceptWaveform(ev.inputBuffer); } catch (e) { console.error(e); } };
+      src.connect(node); node.connect(ctx.destination);
+    } catch (e) { release(stream, ctx); throw e; }
     this.engine = 'vosk'; $('heard').textContent = '';
   },
   async browser() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) throw new Error('no speech recognition in this browser');
     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-    const ctx = new AudioContext(), src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
-    node.onaudioprocess = ev => this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate);
-    src.connect(node); node.connect(ctx.destination);
-    const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = 'en-US';
-    r.onspeechstart = () => { if (S.state === 'ask' && this.vad.start == null) markOnset(performance.now()); };
-    r.onresult = ev => { const res = ev.results[ev.results.length - 1]; this.heard(res[0].transcript, res.isFinal); };
-    r.onend = () => { if (this.on) try { r.start(); } catch {} };
-    r.start(); this.engine = 'browser';
+    const ctx = new AudioContext();
+    try {
+      const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = ev => this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate);
+      src.connect(node); node.connect(ctx.destination);
+      const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = 'en-US';
+      r.onspeechstart = () => { if (S.state === 'ask' && this.vad.start == null) markOnset(performance.now()); };
+      r.onresult = ev => { const res = ev.results[ev.results.length - 1]; this.heard(res[0].transcript, res.isFinal); };
+      r.onend = () => { if (this.on) try { r.start(); } catch {} };
+      r.start();
+    } catch (e) { release(stream, ctx); throw e; }
+    this.engine = 'browser';
   },
 };
 $('micBtn').onclick = () => {

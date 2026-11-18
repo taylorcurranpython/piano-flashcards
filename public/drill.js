@@ -116,8 +116,18 @@ function weakest(ids, n) {
   return shuffle(ids.map(id => byId[id]).sort((a, b) => score(a) - score(b)).slice(0, n).map(c => c.id));
 }
 async function start(practice) {
-  // Turn the mic on first, while the tap still counts as a user gesture (iOS Safari needs that).
-  if (params.get('voice') !== '0' && localStorage.getItem('pf_voice') === '1' && !voice.on) await voice.enable().catch(() => {});
+  // No note and no clock until voice is listening. The mic is requested inside this tap (iOS Safari needs a gesture).
+  const go = S.go = {};
+  if (params.get('voice') !== '0' && !voice.on) {
+    $('scopeLbl').textContent = scope.label; $('timer').textContent = ''; $('left').textContent = '';
+    $('staff').innerHTML = ''; $('fb').textContent = ''; show('drillView');
+    try { await voice.enable(); } catch (e) {
+      const why = $('heard').textContent;
+      if (S.go === go) { await home(); $('homeMsg').textContent = why + '. Voice is needed to start.'; }
+      return;
+    }
+    if (S.go !== go) return;
+  }
   await loadState().catch(() => {});
   const due = scope.ids.filter(id => byId[id].is_due);
   S.practice = practice || !due.length;
@@ -171,7 +181,7 @@ function answer(letter, engine) {
   api('answer', {practice_id: S.id, card_id: card.id, answer: letter, ms, engine}).catch(e => { $('heard').textContent = 'not saved: ' + e.message; });
   setTimeout(next, correct ? 650 : 1800);
 }
-function stop() { S.active = false; S.state = 'idle'; clearInterval(S.tick); }
+function stop() { S.active = false; S.state = 'idle'; S.go = null; clearInterval(S.tick); }
 async function finish() {
   stop();
   if (!S.id) return home();
@@ -279,7 +289,11 @@ const voice = {
     $('heard').textContent = text ? `heard “${text}”` : '';
     if (L) answer(L, voice.engine);
   },
-  async enable() {
+  enable() {
+    if (!this.pending) this.pending = this.start().catch(e => { this.pending = null; throw e; });
+    return this.pending;
+  },
+  async start() {
     $('micBtn').textContent = 'Voice: starting…';
     const want = params.get('engine') || 'vosk';
     try {
@@ -292,18 +306,19 @@ const voice = {
     }
   },
   async vosk() {
+    $('heard').textContent = 'Allow the microphone to start…';
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1}});
+    const ctx = new AudioContext();
+    if (ctx.state === 'suspended') await ctx.resume();
     $('heard').textContent = 'Loading voice model (one-time ~40 MB)…';
     const model = await Vosk.createModel(await modelUrl());
     const grammar = JSON.stringify([...Object.keys(MAP), '[unk]']);
     const rec = new model.KaldiRecognizer(16000, grammar);
     rec.on('result', m => this.heard(m.result.text, true));
     rec.on('partialresult', m => { if (m.result.partial) this.heard(m.result.partial, false); });
-    const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1}});
-    const ctx = new AudioContext();
     const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
     node.onaudioprocess = ev => { this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate); try { rec.acceptWaveform(ev.inputBuffer); } catch (e) { console.error(e); } };
     src.connect(node); node.connect(ctx.destination);
-    if (ctx.state === 'suspended') await ctx.resume();
     this.engine = 'vosk'; $('heard').textContent = '';
   },
   async browser() {

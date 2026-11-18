@@ -2,3 +2,4 @@ starlette
 uvicorn
 sqlalchemy>=2
 fsrs>=6.3,<7
+psycopg2-binary

@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
-DATABASE_URL = os.environ.get("DATABASE_URL") or f"sqlite:///{DATA_DIR / 'piano.db'}"
+# On Vercel only /tmp is writable, so without a Postgres URL a deployment gets a throwaway SQLite file.
+DATA_DIR = Path(os.environ.get("DATA_DIR") or ("/tmp" if os.environ.get("VERCEL") else "data"))
+DATABASE_URL = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+                or f"sqlite:///{DATA_DIR / 'piano.db'}")
 for prefix in ("postgres://", "postgresql://"):
     if DATABASE_URL.startswith(prefix):
         DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len(prefix):]

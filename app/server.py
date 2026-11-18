@@ -47,7 +47,7 @@ async def health(_):
 
 def build_app() -> Starlette:
     init_db()
-    return Starlette(routes=[
+    routes = [
         Route("/health", health),
         Route("/api/state", api(lambda s, b: drill.state(s)), methods=["GET"]),
         Route("/api/practice", api(lambda s, b: drill.start_practice(s, b.get("scope", ""))), methods=["POST"]),
@@ -55,8 +55,10 @@ def build_app() -> Starlette:
             s, int(b["practice_id"]), str(b["card_id"]), b.get("answer"),
             None if b.get("ms") is None else float(b["ms"]), b.get("engine"))), methods=["POST"]),
         Route("/api/finish", api(lambda s, b: drill.finish_practice(s, int(b["practice_id"]))), methods=["POST"]),
-        Mount("/", StaticFiles(directory=PUBLIC, html=True)),
-    ])
+    ]
+    if not os.environ.get("VERCEL"):  # on Vercel the CDN serves public/
+        routes.append(Mount("/", StaticFiles(directory=PUBLIC, html=True)))
+    return Starlette(routes=routes)
 
 
 app = build_app()

@@ -11,10 +11,11 @@ Run:  python -m tests.e2e_voice_edges   (CHROME=/path/to/chrome optional)
 import os
 import re
 import tempfile
+import urllib.request
 
 from playwright.sync_api import sync_playwright
 
-from tests.e2e_voice import TOKEN, free_port, serve
+from tests.e2e_voice import MODEL, MODEL_URL, TOKEN, free_port, serve
 
 SILENT_MIC = """
 (() => {
@@ -61,9 +62,12 @@ def model_fails(browser, base):
 
 def cached_model_host_down(browser, base):
     ctx = browser.new_context()
-    query = f"?model={base}/models/vosk-model-small-en-us-0.15.tar.gz"
+    query = f"?model={base}/__vosk/model.tar.gz"
     page = ctx.new_page()
     page.add_init_script(SILENT_MIC)
+    # no-store, so the host-down request below reaches the route instead of the HTTP cache
+    page.route(re.compile(r"^[^?]*/__vosk/model\.tar\.gz$"),
+               lambda r: r.fulfill(path=str(MODEL), headers={"Cache-Control": "no-store"}))
     login(page, base, query)
     page.click("#startBtn")
     page.wait_for_selector("#staff svg", timeout=120_000)
@@ -71,7 +75,7 @@ def cached_model_host_down(browser, base):
     page = ctx.new_page()
     page.add_init_script(SILENT_MIC)
     hits = []
-    page.route(re.compile(r"^[^?]*/models/vosk-model[^/]*\.tar\.gz$"),
+    page.route(re.compile(r"^[^?]*/__vosk/model\.tar\.gz$"),
                lambda r: (hits.append(r.request.method), r.fulfill(status=503, body="down")))
     page.goto(f"{base}/{query}")
     page.wait_for_selector("#homeView:not(.hidden) .scope")
@@ -102,6 +106,10 @@ def quiet_browser_answer(browser, base):
 
 
 def main():
+    if not MODEL.exists():
+        MODEL.parent.mkdir(parents=True, exist_ok=True)
+        print("downloading Vosk model...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL)
     port = free_port()
     with tempfile.TemporaryDirectory() as d:
         server = serve(port, d)

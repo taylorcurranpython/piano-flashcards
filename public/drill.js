@@ -292,6 +292,54 @@ const modelUrl = async () => params.get('model') ||
   (await fetch('models/' + MODEL_FILE, {method: 'HEAD'}).then(r => r.ok).catch(() => false)
     ? new URL('models/' + MODEL_FILE, location.href).href : 'https://ccoreilly.github.io/vosk-browser/models/' + MODEL_FILE);
 
+// Vosk.createModel never settles when the download fails, so watch for failure ourselves and stop the worker if it does.
+// The probe is a real GET (cancelled after the status). A network error, or an HTTP error while the model is already
+// cached, doesn't fail the load.
+function loadModel(url, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const m = new Vosk.Model(url);
+    let done = false;
+    const timer = setTimeout(() => fail('timed out'), timeoutMs);
+    const fail = why => {
+      if (done) return; done = true; clearTimeout(timer);
+      try { m.terminate(); } catch {}
+      try { m.worker.terminate(); } catch {}
+      reject(new Error('voice model failed to load: ' + why));
+    };
+    m.on('load', msg => {
+      if (done) return;
+      if (!msg.result) return fail('load error');
+      done = true; clearTimeout(timer); resolve(m);
+    });
+    m.on('error', msg => fail(msg.error || 'worker error'));
+    m.worker.addEventListener('error', e => fail(e.message || 'worker error'));
+    fetch(url, {cache: 'force-cache'}).then(async r => {
+      r.body?.cancel().catch(() => {});
+      if (!r.ok && !(await modelCached(url))) fail('HTTP ' + r.status);
+    }).catch(() => {});
+  });
+}
+// Vosk keeps the extracted model in the IndexedDB database "/vosk" (Emscripten IDBFS), keyed by file path,
+// so a model in there loads even while its host is down.
+function modelCached(url) {
+  const dir = '/vosk/' + url.replace(/[\W]/g, '_') + '/';
+  return new Promise(resolve => {
+    let req;
+    try { req = indexedDB.open('/vosk'); } catch { return resolve(false); }
+    req.onupgradeneeded = () => req.transaction.abort();
+    req.onerror = () => resolve(false);
+    req.onsuccess = () => {
+      const db = req.result;
+      try {
+        const get = db.transaction('FILE_DATA').objectStore('FILE_DATA').getKey(IDBKeyRange.bound(dir, dir + '\uffff'));
+        get.onsuccess = () => { db.close(); resolve(get.result !== undefined); };
+        get.onerror = () => { db.close(); resolve(false); };
+      } catch { db.close(); resolve(false); }
+    };
+  });
+}
+
+function release(stream, ctx) { stream.getTracks().forEach(t => t.stop()); ctx.close().catch(() => {}); }
 const voice = {
   on: false, engine: null, vad: {floor: 0.005, active: false, start: null, lastStart: null, quiet: 0, bursts: []},
   reset() { const v = this.vad; v.lastStart = null; v.bursts = []; if (!v.active) v.start = null; },
@@ -326,7 +374,8 @@ const voice = {
   heard(text, final) {
     if (S.state !== 'ask') return;
     // A result for speech that began before this note (e.g. Vosk finishing the previous answer late) is stale.
-    if (this.speechStart(S.t0) == null) return;
+    // S.onset is only ever set during this note, so it also covers speech too quiet for the VAD.
+    if (S.onset === null && this.speechStart(S.t0) == null) return;
     const L = toLetter(text);
     $('heard').textContent = text ? `heard “${text}”` : '';
     if (L) answer(L, voice.engine);
@@ -351,45 +400,51 @@ const voice = {
     $('heard').textContent = 'Allow the microphone to start…';
     const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1}});
     const ctx = new AudioContext();
-    if (ctx.state === 'suspended') await ctx.resume();
-    $('heard').textContent = 'Loading voice model (one-time ~40 MB)…';
-    const model = await Vosk.createModel(await modelUrl());
-    const grammar = JSON.stringify([...Object.keys(MAP), '[unk]']);
-    const rec = new model.KaldiRecognizer(16000, grammar);
-    rec.setWords(true);
-    rec.on('result', m => {
-      this.heard(m.result.text, true);
-      for (const w of m.result.result || []) {
-        const L = toLetter(w.word), t = this.audioTime(w.start);
-        if (L && t != null) { correctOnset(L, t); break; }
-      }
-    });
-    rec.on('partialresult', m => { if (m.result.partial) this.heard(m.result.partial, false); });
-    const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
-    let fed = 0;
-    this.chunks = [];
-    node.onaudioprocess = ev => {
-      const buf = ev.inputBuffer;
-      this.chunks.push([fed, performance.now() - buf.duration * 1000]); if (this.chunks.length > 400) this.chunks.shift();
-      fed += buf.duration;
-      this.feed(buf.getChannelData(0), ctx.sampleRate);
-      try { rec.acceptWaveform(buf); } catch (e) { console.error(e); }
-    };
-    src.connect(node); node.connect(ctx.destination);
+    try {
+      if (ctx.state === 'suspended') await ctx.resume();
+      $('heard').textContent = 'Loading voice model (one-time ~40 MB)…';
+      const model = await loadModel(await modelUrl());
+      const grammar = JSON.stringify([...Object.keys(MAP), '[unk]']);
+      const rec = new model.KaldiRecognizer(16000, grammar);
+      rec.setWords(true);
+      rec.on('result', m => {
+        this.heard(m.result.text, true);
+        for (const w of m.result.result || []) {
+          const L = toLetter(w.word), t = this.audioTime(w.start);
+          if (L && t != null) { correctOnset(L, t); break; }
+        }
+      });
+      rec.on('partialresult', m => { if (m.result.partial) this.heard(m.result.partial, false); });
+      const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
+      let fed = 0;
+      this.chunks = [];
+      node.onaudioprocess = ev => {
+        const buf = ev.inputBuffer;
+        this.chunks.push([fed, performance.now() - buf.duration * 1000]); if (this.chunks.length > 400) this.chunks.shift();
+        fed += buf.duration;
+        this.feed(buf.getChannelData(0), ctx.sampleRate);
+        try { rec.acceptWaveform(buf); } catch (e) { console.error(e); }
+      };
+      src.connect(node); node.connect(ctx.destination);
+    } catch (e) { release(stream, ctx); throw e; }
     this.engine = 'vosk'; $('heard').textContent = '';
   },
   async browser() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) throw new Error('no speech recognition in this browser');
     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-    const ctx = new AudioContext(), src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
-    node.onaudioprocess = ev => this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate);
-    src.connect(node); node.connect(ctx.destination);
-    const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = 'en-US';
-    r.onspeechstart = () => { if (S.state === 'ask' && this.vad.start == null) markOnset(performance.now()); };
-    r.onresult = ev => { const res = ev.results[ev.results.length - 1]; this.heard(res[0].transcript, res.isFinal); };
-    r.onend = () => { if (this.on) try { r.start(); } catch {} };
-    r.start(); this.engine = 'browser';
+    const ctx = new AudioContext();
+    try {
+      const src = ctx.createMediaStreamSource(stream), node = ctx.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = ev => this.feed(ev.inputBuffer.getChannelData(0), ctx.sampleRate);
+      src.connect(node); node.connect(ctx.destination);
+      const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = 'en-US';
+      r.onspeechstart = () => { if (S.state === 'ask' && this.vad.start == null) markOnset(performance.now()); };
+      r.onresult = ev => { const res = ev.results[ev.results.length - 1]; this.heard(res[0].transcript, res.isFinal); };
+      r.onend = () => { if (this.on) try { r.start(); } catch {} };
+      r.start();
+    } catch (e) { release(stream, ctx); throw e; }
+    this.engine = 'browser';
   },
 };
 $('micBtn').onclick = () => {

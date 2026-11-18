@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#244A40">
+<title>Piano flashcards</title>
+<link rel="icon" href="icon.svg">
+<style>
+:root{--bg:#f7f5f0;--paper:#fff;--ink:#1f2430;--muted:#6b6f7a;--line:#d9d6ce;--accent:#244A40;
+  --easy:#2e7d4f;--good:#c9a227;--hard:#d9772b;--bad:#b4423a;--new:#b9b6ae}
+@media (prefers-color-scheme:dark){:root{--bg:#15171c;--paper:#1e2127;--ink:#e8e6e0;--muted:#9a9ea8;--line:#343842;
+  --accent:#9BD08F;--new:#4a4e57;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;
+  padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 32px max(16px,env(safe-area-inset-left))}
+main{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+h1{font-size:1.35rem;margin:0}
+h2{font-size:1rem;margin:0 0 8px;color:var(--muted);font-weight:600}
+button{font:inherit;border:0;border-radius:10px;padding:12px 16px;background:var(--accent);color:var(--bg);cursor:pointer;font-weight:600}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.small{padding:6px 10px;font-size:.85rem}
+button:disabled{opacity:.5}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:16px}
+.hidden{display:none!important}
+.muted{color:var(--muted);font-size:.9rem}
+.scopes{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.scope{text-align:left;background:var(--bg);color:var(--ink);border:2px solid var(--line);padding:10px 12px}
+.scope.sel{border-color:var(--accent)}
+.scope b{display:block;font-size:.95rem}
+.scope span{font-size:.8rem;color:var(--muted);font-weight:400}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+select,input[type=password],input[type=text]{font:inherit;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.mic{font-size:.9rem}
+.mic.on{color:var(--easy)}
+#stage{display:flex;flex-direction:column;align-items:center;gap:10px}
+#staff{width:100%;max-width:420px;background:#fff;border-radius:10px;border:1px solid var(--line);aspect-ratio:220/125;display:flex;align-items:center;justify-content:center}
+#staff svg{width:100%;height:100%}
+#fb{min-height:2.2rem;font-size:1.5rem;font-weight:700;text-align:center}
+#fb.Easy{color:var(--easy)} #fb.Good{color:var(--good)} #fb.Hard{color:var(--hard)} #fb.Again{color:var(--bad)}
+#heard{min-height:1.3rem;font-style:italic;color:var(--muted);font-size:.9rem}
+.meta{display:flex;justify-content:space-between;width:100%;max-width:420px;color:var(--muted);font-variant-numeric:tabular-nums;font-size:.9rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px}
+.cell{border-radius:8px;padding:6px 4px;text-align:center;color:#fff;font-variant-numeric:tabular-nums;font-size:.75rem;background:var(--new)}
+.cell b{display:block;font-size:1rem}
+.cell.Easy{background:var(--easy)} .cell.Good{background:var(--good)} .cell.Hard{background:var(--hard)} .cell.Again{background:var(--bad)}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+table{width:100%;border-collapse:collapse;font-size:.9rem;font-variant-numeric:tabular-nums}
+td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line)}
+.big{font-size:1.6rem;font-weight:700}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Piano flashcards</h1>
+    <div class="row">
+      <button class="ghost small" id="statsBtn">Stats</button>
+      <button class="ghost small" id="micBtn">Voice: off</button>
+    </div>
+  </header>
+
+  <section id="tokenView" class="panel hidden">
+    <h2>Access token</h2>
+    <p class="muted">The ACCESS_TOKEN this server was started with. Asked once per device.</p>
+    <form id="tokenForm" class="row"><input type="password" id="tokenInput" autocomplete="current-password" placeholder="token" required><button>Save</button></form>
+    <p class="muted" id="tokenErr"></p>
+  </section>
+
+  <section id="homeView" class="hidden">
+    <div class="panel">
+      <h2>What to drill</h2>
+      <div class="scopes" id="scopes"></div>
+      <details style="margin-top:12px"><summary class="muted">Custom range</summary>
+        <div class="row" style="margin-top:8px">
+          <select id="cClef"><option value="treble">Treble</option><option value="bass">Bass</option></select>
+          <select id="cLow"></select> to <select id="cHigh"></select>
+          <input type="text" id="cName" placeholder="name (to save)" size="10">
+          <button class="ghost small" id="cUse">Use</button><button class="ghost small" id="cSave">Save</button>
+        </div>
+      </details>
+    </div>
+    <div class="row">
+      <button id="startBtn" style="flex:1">Start</button>
+    </div>
+    <p class="muted" id="homeMsg"></p>
+  </section>
+
+  <section id="drillView" class="hidden">
+    <div id="stage">
+      <div class="meta"><span id="scopeLbl"></span><span id="timer">0.0s</span><span id="left"></span></div>
+      <div id="staff" aria-label="Staff with one note"></div>
+      <div id="fb"></div>
+      <div id="heard"></div>
+      <button class="ghost small" id="endBtn">End session</button>
+    </div>
+  </section>
+
+  <section id="doneView" class="panel hidden">
+    <h2>Session done</h2>
+    <p class="big" id="doneHead"></p>
+    <p class="muted" id="doneSub"></p>
+    <div class="grid" id="doneGrid"></div>
+    <div class="row" style="margin-top:12px"><button id="practiceBtn">Keep practicing</button><button class="ghost" id="homeBtn">Home</button></div>
+  </section>
+
+  <section id="statsView" class="hidden">
+    <div class="legend"><span><i style="background:var(--easy)"></i>&lt;1s</span><span><i style="background:var(--good)"></i>1–2s</span>
+      <span><i style="background:var(--hard)"></i>&gt;2s</span><span><i style="background:var(--bad)"></i>last answer wrong</span><span><i style="background:var(--new)"></i>not seen</span></div>
+    <div class="panel"><h2>Treble</h2><div class="grid" id="gridTreble"></div></div>
+    <div class="panel"><h2>Bass</h2><div class="grid" id="gridBass"></div></div>
+    <div class="panel"><h2>Slowest</h2><table id="slowTbl"></table></div>
+    <button class="ghost" id="statsBack">Back</button>
+  </section>
+</main>
+<script src="vendor/vexflow.js"></script>
+<script src="vendor/vosk.js"></script>
+<script src="drill.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+services:
+  piano:
+    build: .
+    ports: ["8000:8000"]
+    volumes: ["./data:/data"]
+    environment:
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+    restart: unless-stopped

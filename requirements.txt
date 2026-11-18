@@ -1,0 +1,4 @@
+starlette
+uvicorn
+sqlalchemy>=2
+fsrs>=6.3,<7

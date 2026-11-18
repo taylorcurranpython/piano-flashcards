@@ -143,6 +143,41 @@ def run_controlled(browser, base):
     return results
 
 
+def run_late_recognition(browser, base):
+    """Slow recognizer whose result arrives after a noise burst that followed the answer: the grade on screen
+    first uses the noise, but Vosk's word timestamp must re-time the answer before it is saved."""
+    page = browser.new_page()
+    page.add_init_script(FAKE_MIC)
+    route_assets(page)
+    saved = []
+    page.on("request", lambda r: saved.append(r.post_data_json) if r.url.endswith("/api/answer") else None)
+    open_drill(page, base)
+    page.click("text=Treble · staff")
+    page.click("#startBtn")
+    page.wait_for_function("() => document.querySelector('#staff svg') && !document.querySelector('#fb').textContent")
+    # Slow recognizer: drop partials and deliver the final result (and its word timestamps) 1.2 s late.
+    page.evaluate("""() => {
+      const h = voice.heard.bind(voice), c = correctOnset, a = answer;
+      voice.heard = (t, f) => { if (f) setTimeout(() => h(t, f), 1200); };
+      window.correctOnset = (l, t) => setTimeout(() => c(l, t), 1200);
+      window.answer = (l, e) => { a(l, e); window.__graded = S.answered[S.answered.length - 1].ms; };
+    }""")
+    page.wait_for_timeout(50)
+    card = page.get_attribute("#staff svg", "data-card")
+    letter = card.split(":")[1][0]
+    page.evaluate("l => { const t = performance.now(); window.__say(l, 400, t); window.__noise(1600, t, 150); }", letter)
+    page.wait_for_function("() => document.querySelector('#fb').dataset.rating", timeout=15_000)
+    first = page.evaluate("window.__graded")
+    page.wait_for_function("() => document.querySelectorAll('#staff svg').length && S.answered.length && !S.pending", timeout=5_000)
+    page.wait_for_timeout(300)
+    final = page.evaluate("S.answered[0]")
+    expect = 400 + LEAD_MS[letter]
+    print(f"  {card:10} said {letter} at {expect}ms, noise at 1600ms, result 1.2s late: "
+          f"graded at {first}ms, re-timed to {final['ms']}ms {final['rating']}, saved {saved[0]['ms']}ms")
+    assert first > 1500 and final["rating"] == "Easy" and abs(final["ms"] - expect) <= TOLERANCE_MS and saved[0]["ms"] == final["ms"]
+    page.close()
+
+
 def run_fake_device(pw, chrome, base):
     b = pw.chromium.launch(executable_path=chrome, args=[
         "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
@@ -178,6 +213,8 @@ def main():
                                                                      "--use-fake-ui-for-media-stream"])
             print("controlled mic:")
             run_controlled(browser, base)
+            print("late recognition after a noise:")
+            run_late_recognition(browser, base)
             browser.close()
             print("chrome fake capture device:")
             run_fake_device(pw, chrome, base)

@@ -179,9 +179,10 @@ function answer(letter, engine) {
   const a = {id: card.id, letter, ms, correct, rating: rateOf(correct, ms)};
   S.answered.push(a);
   showGrade(card, a);
+  if (a.rating === 'Again' || a.rating === 'Hard') requeue(card.id, a.rating);
   if (S.pending) commit(S.pending);
-  // Vosk's final result says when the word itself began; until it arrives (or 1.5 s pass) the grade on screen
-  // stands but isn't saved, so a later noise burst picked by speechStart can still be corrected.
+  // Vosk's final result says when the word itself began; until it arrives (or 1.5 s pass) the answer isn't
+  // saved, so a noise burst that speechStart picked after the word can still be corrected.
   const p = {a, card, engine, practice: S.id, t0: S.t0, bursts: voice.vad.bursts};
   if (engine === 'vosk') { S.pending = p; p.timer = setTimeout(() => commit(p), 1500); } else commit(p);
   setTimeout(next, correct ? 650 : 1800);
@@ -196,7 +197,6 @@ function commit(p) {
   if (p.saved) return p.saved;
   clearTimeout(p.timer); if (S.pending === p) S.pending = null;
   const a = p.a;
-  if (a.rating === 'Again' || a.rating === 'Hard') requeue(a.id, a.rating);
   return p.saved = api('answer', {practice_id: p.practice, card_id: a.id, answer: a.letter, ms: a.ms, engine: p.engine})
     .catch(e => { $('heard').textContent = 'not saved: ' + e.message; });
 }
@@ -207,7 +207,10 @@ function correctOnset(letter, wordStart) {
   const b = p.bursts.filter(t => t >= p.t0 - 30 && t <= wordStart + 100).pop();
   const ms = Math.round(Math.max(b ?? wordStart, p.t0) - p.t0);
   if (ms !== p.a.ms) {
+    const was = p.a.rating;
     p.a.ms = ms; p.a.rating = rateOf(p.a.correct, ms);
+    // The word can only start earlier than the guess, so a Hard can become Good/Easy: take back its retry.
+    if (was === 'Hard' && p.a.rating !== 'Hard') { const i = S.queue.indexOf(p.a.id); if (i >= 0) S.queue.splice(i, 1); }
     if (S.cur === p.card && S.state === 'graded') { showGrade(p.card, p.a); $('timer').textContent = fmt(ms); }
   }
   commit(p);
@@ -244,7 +247,10 @@ $('startBtn').onclick = () => start(false);
 $('practiceBtn').onclick = () => start(true);
 $('homeBtn').onclick = home;
 $('endBtn').onclick = finish;
-window.addEventListener('pagehide', () => { if (S.id && S.answered.length) api('finish', {practice_id: S.id}).catch(() => {}); });
+window.addEventListener('pagehide', () => {
+  if (S.pending) commit(S.pending);
+  if (S.id && S.answered.length) api('finish', {practice_id: S.id}).catch(() => {});
+});
 document.addEventListener('keydown', e => {
   if (S.state === 'ask' && /^[a-g]$/i.test(e.key) && !e.metaKey && !e.ctrlKey) { markOnset(performance.now()); answer(e.key.toUpperCase(), 'key'); }
 });

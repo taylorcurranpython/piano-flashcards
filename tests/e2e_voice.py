@@ -62,6 +62,14 @@ FAKE_MIC = """
   const ensure = () => { if (!ctx) { ctx = new AudioContext(); dest = ctx.createMediaStreamDestination(); } return ctx; };
   navigator.mediaDevices.getUserMedia = async () => { ensure(); await ctx.resume(); return dest.stream; };
   const cache = {};
+  // A burst of white noise (a cough, a click, a chair) that is not an answer.
+  window.__noise = (delayMs, t0, durMs) => {
+    ensure();
+    const buf = ctx.createBuffer(1, Math.round(ctx.sampleRate * durMs / 1000), ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.3;
+    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(dest);
+    src.start(ctx.currentTime + Math.max(0, t0 + delayMs - performance.now()) / 1000);
+  };
   window.__say = async (letter, delayMs, t0) => {
     ensure();
     cache[letter] = cache[letter] || await fetch('/__audio/' + letter + '.wav').then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b));
@@ -95,9 +103,11 @@ def run_controlled(browser, base):
     page.click("text=Treble · staff")
     page.click("#startBtn")
     # (delay before speaking, answer right?) -> expected grade
+    # A fourth value is when a noise burst plays before the answer; it must not count as the answer's start.
     plan = [(400, True, "Easy"), (1300, True, "Good"), (2400, True, "Hard"), (500, False, "Again")] * 3
+    plan += [(2400, True, "Hard", 300), (1300, True, "Good", 200)]
     results, seen, wrong_card = [], [], None
-    for delay, right, grade in plan:
+    for delay, right, grade, *noise in plan:
         page.wait_for_function("() => document.querySelector('#staff svg') && !document.querySelector('#fb').textContent")
         page.wait_for_timeout(50)
         card = page.get_attribute("#staff svg", "data-card")
@@ -105,7 +115,8 @@ def run_controlled(browser, base):
         say = letter if right else "ABCDEFG"[("ABCDEFG".index(letter) + 3) % 7]
         if not right:
             wrong_card = card
-        page.evaluate("([l, d]) => window.__say(l, d, performance.now())", [say, delay])
+        page.evaluate("([l, d, n]) => { const t = performance.now(); if (n != null) window.__noise(n, t, 120); window.__say(l, d, t); }",
+                      [say, delay, noise[0] if noise else None])
         page.wait_for_function("() => document.querySelector('#fb').dataset.rating && document.querySelector('#fb').textContent", timeout=15_000)
         rating = page.get_attribute("#fb", "data-rating")
         shown = page.text_content("#timer")
@@ -114,7 +125,7 @@ def run_controlled(browser, base):
         results.append((card, say, delay, ms, rating, grade))
         seen.append(card)
         late = ms - delay - LEAD_MS[say]
-        print(f"  {card:10} said {say}, speech at {delay + LEAD_MS[say]:4}ms -> recorded {ms:4}ms ({late:+4}) {shown} {rating:5} expected {grade:5} {heard}")
+        print(f"  {card:10} {'noise at ' + str(noise[0]) + 'ms, ' if noise else ''}said {say}, speech at {delay + LEAD_MS[say]:4}ms -> recorded {ms:4}ms ({late:+4}) {shown} {rating:5} expected {grade:5} {heard}")
         page.evaluate("document.querySelector('#fb').dataset.rating = ''")
     page.screenshot(path=str(ROOT / "tests" / "e2e_voice.png"))
     bad = [r for r in results if r[4] != r[5] or not (-30 <= r[3] - (r[2] + LEAD_MS[r[1]]) <= TOLERANCE_MS)]
@@ -130,6 +141,41 @@ def run_controlled(browser, base):
     page.screenshot(path=str(ROOT / "tests" / "e2e_stats_phone.png"), full_page=True)
     page.close()
     return results
+
+
+def run_late_recognition(browser, base):
+    """Slow recognizer whose result arrives after a noise burst that followed the answer: the grade on screen
+    first uses the noise, but Vosk's word timestamp must re-time the answer before it is saved."""
+    page = browser.new_page()
+    page.add_init_script(FAKE_MIC)
+    route_assets(page)
+    saved = []
+    page.on("request", lambda r: saved.append(r.post_data_json) if r.url.endswith("/api/answer") else None)
+    open_drill(page, base)
+    page.click("text=Treble · staff")
+    page.click("#startBtn")
+    page.wait_for_function("() => document.querySelector('#staff svg') && !document.querySelector('#fb').textContent")
+    # Slow recognizer: drop partials and deliver the final result (and its word timestamps) 1.2 s late.
+    page.evaluate("""() => {
+      const h = voice.heard.bind(voice), c = correctOnset, a = answer;
+      voice.heard = (t, f) => { if (f) setTimeout(() => h(t, f), 1200); };
+      window.correctOnset = (l, t) => setTimeout(() => c(l, t), 1200);
+      window.answer = (l, e) => { a(l, e); window.__graded = S.answered[S.answered.length - 1].ms; };
+    }""")
+    page.wait_for_timeout(50)
+    card = page.get_attribute("#staff svg", "data-card")
+    letter = card.split(":")[1][0]
+    page.evaluate("l => { const t = performance.now(); window.__say(l, 400, t); window.__noise(1600, t, 150); }", letter)
+    page.wait_for_function("() => document.querySelector('#fb').dataset.rating", timeout=15_000)
+    first = page.evaluate("window.__graded")
+    page.wait_for_function("() => document.querySelectorAll('#staff svg').length && S.answered.length && !S.pending", timeout=5_000)
+    page.wait_for_timeout(300)
+    final = page.evaluate("S.answered[0]")
+    expect = 400 + LEAD_MS[letter]
+    print(f"  {card:10} said {letter} at {expect}ms, noise at 1600ms, result 1.2s late: "
+          f"graded at {first}ms, re-timed to {final['ms']}ms {final['rating']}, saved {saved[0]['ms']}ms")
+    assert first > 1500 and final["rating"] == "Easy" and abs(final["ms"] - expect) <= TOLERANCE_MS and saved[0]["ms"] == final["ms"]
+    page.close()
 
 
 def run_fake_device(pw, chrome, base):
@@ -167,6 +213,8 @@ def main():
                                                                      "--use-fake-ui-for-media-stream"])
             print("controlled mic:")
             run_controlled(browser, base)
+            print("late recognition after a noise:")
+            run_late_recognition(browser, base)
             browser.close()
             print("chrome fake capture device:")
             run_fake_device(pw, chrome, base)

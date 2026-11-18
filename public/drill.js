@@ -248,7 +248,7 @@ const voice = {
   on: false, engine: null, vad: {floor: 0.005, active: false, start: null, lastStart: null, quiet: 0},
   reset() { const v = this.vad; v.lastStart = null; if (!v.active) v.start = null; },
   // Start of the speech that produced the current result: the ongoing burst, else the last one since t0.
-  speechStart(t0) { const v = this.vad; const s = v.active ? v.start : v.lastStart; return s != null && s >= t0 - 300 ? s : null; },
+  speechStart(t0) { const v = this.vad; const s = v.active ? v.start : v.lastStart; return s != null && s >= t0 - 30 ? s : null; },
   // Energy-based speech onset. Works on ~5 ms blocks; once speech is detected it walks back over the
   // quieter lead-in (soft consonants like the "s" in "see") so the onset isn't late.
   hist: [],

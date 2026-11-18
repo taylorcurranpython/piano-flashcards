@@ -62,6 +62,14 @@ FAKE_MIC = """
   const ensure = () => { if (!ctx) { ctx = new AudioContext(); dest = ctx.createMediaStreamDestination(); } return ctx; };
   navigator.mediaDevices.getUserMedia = async () => { ensure(); await ctx.resume(); return dest.stream; };
   const cache = {};
+  // A burst of white noise (a cough, a click, a chair) that is not an answer.
+  window.__noise = (delayMs, t0, durMs) => {
+    ensure();
+    const buf = ctx.createBuffer(1, Math.round(ctx.sampleRate * durMs / 1000), ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.3;
+    const src = ctx.createBufferSource(); src.buffer = buf; src.connect(dest);
+    src.start(ctx.currentTime + Math.max(0, t0 + delayMs - performance.now()) / 1000);
+  };
   window.__say = async (letter, delayMs, t0) => {
     ensure();
     cache[letter] = cache[letter] || await fetch('/__audio/' + letter + '.wav').then(r => r.arrayBuffer()).then(b => ctx.decodeAudioData(b));
@@ -95,9 +103,11 @@ def run_controlled(browser, base):
     page.click("text=Treble · staff")
     page.click("#startBtn")
     # (delay before speaking, answer right?) -> expected grade
+    # A fourth value is when a noise burst plays before the answer; it must not count as the answer's start.
     plan = [(400, True, "Easy"), (1300, True, "Good"), (2400, True, "Hard"), (500, False, "Again")] * 3
+    plan += [(2400, True, "Hard", 300), (1300, True, "Good", 200)]
     results, seen, wrong_card = [], [], None
-    for delay, right, grade in plan:
+    for delay, right, grade, *noise in plan:
         page.wait_for_function("() => document.querySelector('#staff svg') && !document.querySelector('#fb').textContent")
         page.wait_for_timeout(50)
         card = page.get_attribute("#staff svg", "data-card")
@@ -105,7 +115,8 @@ def run_controlled(browser, base):
         say = letter if right else "ABCDEFG"[("ABCDEFG".index(letter) + 3) % 7]
         if not right:
             wrong_card = card
-        page.evaluate("([l, d]) => window.__say(l, d, performance.now())", [say, delay])
+        page.evaluate("([l, d, n]) => { const t = performance.now(); if (n != null) window.__noise(n, t, 120); window.__say(l, d, t); }",
+                      [say, delay, noise[0] if noise else None])
         page.wait_for_function("() => document.querySelector('#fb').dataset.rating && document.querySelector('#fb').textContent", timeout=15_000)
         rating = page.get_attribute("#fb", "data-rating")
         shown = page.text_content("#timer")
@@ -114,7 +125,7 @@ def run_controlled(browser, base):
         results.append((card, say, delay, ms, rating, grade))
         seen.append(card)
         late = ms - delay - LEAD_MS[say]
-        print(f"  {card:10} said {say}, speech at {delay + LEAD_MS[say]:4}ms -> recorded {ms:4}ms ({late:+4}) {shown} {rating:5} expected {grade:5} {heard}")
+        print(f"  {card:10} {'noise at ' + str(noise[0]) + 'ms, ' if noise else ''}said {say}, speech at {delay + LEAD_MS[say]:4}ms -> recorded {ms:4}ms ({late:+4}) {shown} {rating:5} expected {grade:5} {heard}")
         page.evaluate("document.querySelector('#fb').dataset.rating = ''")
     page.screenshot(path=str(ROOT / "tests" / "e2e_voice.png"))
     bad = [r for r in results if r[4] != r[5] or not (-30 <= r[3] - (r[2] + LEAD_MS[r[1]]) <= TOLERANCE_MS)]

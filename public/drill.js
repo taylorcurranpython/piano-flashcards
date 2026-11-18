@@ -169,7 +169,11 @@ function markOnset(ts) {
 }
 function answer(letter, engine) {
   if (S.state !== 'ask' || !S.active || !S.id) return;
-  if (S.onset === null) { const s0 = voice.speechStart(S.t0); markOnset(engine !== 'key' && s0 != null ? s0 : performance.now()); }
+  // Time voice answers from the start of the sound burst the recognized word came from, not from the first
+  // noise after the note appeared (a cough or click would otherwise freeze the clock early).
+  const s0 = engine === 'key' ? null : voice.speechStart(S.t0);
+  if (s0 != null) { S.onset = null; markOnset(s0); }
+  else if (S.onset === null) markOnset(performance.now());
   S.state = 'graded';
   const card = S.cur, ms = Math.round(S.onset - S.t0), correct = letter === card.letter;
   const rating = !correct ? 'Again' : ms > cfg.good_ms ? 'Hard' : ms > cfg.easy_ms ? 'Good' : 'Easy';
@@ -275,7 +279,6 @@ const voice = {
           const soft = Math.max(0.003, v.floor * 1.5);
           for (let i = this.hist.length - 2; i >= 0 && this.hist[i][1] > soft && t - this.hist[i][0] < 300; i--) start = this.hist[i][0];
           v.active = true; v.start = start; v.quiet = 0;
-          if (S.state === 'ask') markOnset(start);
         }
       } else if (rms < Math.max(0.008, v.floor * 2)) { v.quiet += blockMs; if (v.quiet > 300) { v.active = false; v.lastStart = v.start; } }
       else v.quiet = 0;

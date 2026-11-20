@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import drill
+from . import drill, pulse
 from .db import init_db, session
 
 TOKEN = os.environ.get("ACCESS_TOKEN", "")
@@ -55,6 +55,10 @@ def build_app() -> Starlette:
             s, int(b["practice_id"]), str(b["card_id"]), b.get("answer"),
             None if b.get("ms") is None else float(b["ms"]), b.get("engine"))), methods=["POST"]),
         Route("/api/finish", api(lambda s, b: drill.finish_practice(s, int(b["practice_id"]))), methods=["POST"]),
+        Route("/api/pulse/state", api(lambda s, b: pulse.state(s)), methods=["GET"]),
+        Route("/api/pulse/start", api(lambda s, b: pulse.start(s, b["bpm"], b.get("minutes", 4))), methods=["POST"]),
+        Route("/api/pulse/round", api(lambda s, b: pulse.record_round(s, int(b["session_id"]), b)), methods=["POST"]),
+        Route("/api/pulse/finish", api(lambda s, b: pulse.finish(s, int(b["session_id"]))), methods=["POST"]),
     ]
     if not os.environ.get("VERCEL"):  # on Vercel the CDN serves public/
         routes.append(Mount("/", StaticFiles(directory=PUBLIC, html=True)))

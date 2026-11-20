@@ -118,7 +118,7 @@ async function pulseStart() {
     active: true, starting: false, id: r.session_id, bpm, period, cfg,
     target: pq('pulse_silent') || r.start_s, clickBeats: bars(pq('pulse_click') || cfg.click_s),
     total: (pq('pulse_minutes') || minutes) * 60, t0: pulseAudio.ctx.currentTime + 0.4, next: 0,
-    rounds: [], claps: [], R: null, L: null, last: null, note: '', seg: {type: 'count', start: 0, end: 4},
+    rounds: [], claps: [], R: null, L: null, last: null, note: '', pending: null, seg: {type: 'count', start: 0, end: 4},
   });
   PS.startAt = beatTime(4);
   pulseAudio.node.port.postMessage({refractory: period * 0.3});
@@ -134,7 +134,7 @@ function pulseTick() {
   if (!PS.active) return;
   const now = pulseAudio.ctx.currentTime;
   PS.timeUp = now - PS.startAt >= PS.total;
-  if (PS.timeUp && PS.seg.type === 'click') return pulseFinish();
+  if (PS.timeUp && PS.seg.type === 'click' && !PS.pending) return pulseFinish();
   judge(now);
   while (PS.active && beatTime(PS.next) < now + 0.12) scheduleBeat(PS.next++);
   if (PS.active) renderRun(now);
@@ -150,7 +150,8 @@ function scheduleBeat(k) {
   } else if (seg.type === 'click' && k >= seg.end) {
     if (!startSilent(k)) return;
   } else if (seg.type === 'silent' && k >= seg.start + seg.beats) {
-    if (!endSilent(true, k)) return;
+    // The click comes back on time; the silence is scored once judge() has seen its last beats (PS.pending).
+    PS.pending = seg; PS.seg = {type: 'click', start: k, end: k + PS.clickBeats};
   }
   if (PS.seg.type !== 'silent') pulseAudio.click(beatTime(k), k % 4 === 0);
 }
@@ -169,24 +170,26 @@ function startSilent(k) {
 
 // Judge each silent beat once its window (half a beat either side of where the beat falls) has passed.
 function judge(now) {
-  const seg = PS.seg, p = PS.period, off = PS.cfg.off_frac * p;
+  const seg = PS.pending || PS.seg, p = PS.period, off = PS.cfg.off_frac * p;
   if (seg.type !== 'silent') return;
-  while (seg.judged < seg.start + seg.beats) {
+  while (true) {
+    if (seg.judged >= seg.start + seg.beats) { if (seg === PS.pending) endSilent(true); return; }
     const k = seg.judged, exp = beatTime(k) + PS.R;
     if (now < exp + p / 2 + 0.03) return;
     const best = PS.claps.filter(c => c.t >= exp - p / 2 && c.t < exp + p / 2)
       .sort((a, b) => Math.abs(a.t - exp) - Math.abs(b.t - exp))[0];
     const d = best ? best.t - exp : null, bad = d == null || Math.abs(d) > off;
-    if (best) seg.claps++;
+    if (best) { seg.claps++; seg.offs.push(d); }
     PS.last = {k, d, bad};
-    if (bad) { seg.offRun++; if (seg.firstOff == null) seg.firstOff = k; } else { seg.offRun = 0; seg.firstOff = null; seg.offs.push(d); }
+    if (bad) { seg.offRun++; if (seg.firstOff == null) seg.firstOff = k; } else { seg.offRun = 0; seg.firstOff = null; }
     seg.judged++;
-    if (seg.offRun >= PS.cfg.off_run) { endSilent(false, PS.next); return; }
+    if (seg.offRun >= PS.cfg.off_run) { endSilent(false); return; }
   }
 }
 
-function endSilent(completed, k) {
-  const seg = PS.seg, p = PS.period, offs = seg.offs.map(x => x * 1000);
+// Score a silence: held to the end, or lost (the click comes back at the next beat unless it already has).
+function endSilent(completed) {
+  const seg = PS.pending || PS.seg, p = PS.period, offs = seg.offs.map(x => x * 1000);
   const round = {
     target_s: +(seg.beats * p).toFixed(1), held_s: +((completed ? seg.beats : seg.firstOff - seg.start) * p).toFixed(1),
     completed, claps: seg.claps, mean_offset_ms: offs.length ? Math.round(mean(offs)) : null,
@@ -197,9 +200,10 @@ function endSilent(completed, k) {
   if (completed && seg.full) PS.target = Math.min(PS.cfg.max_silent_s, PS.target + PS.cfg.step_s);
   PS.note = completed ? `Held all ${Math.round(round.held_s)}s — next silence ${Math.round(PS.target)}s` : `Off the beat after ${Math.round(round.held_s)}s — click is back`;
   $('pRounds').textContent = 'Silent stretches: ' + PS.rounds.map(r => `${Math.round(r.held_s)}s${r.completed ? ' ✓' : ''}`).join(' · ');
-  if (PS.timeUp) { pulseFinish(); return false; }
-  PS.seg = {type: 'click', start: k, end: k + PS.clickBeats};
-  return true;
+  $('pMsg').textContent = '';
+  if (seg === PS.pending) PS.pending = null;
+  else if (PS.timeUp) pulseFinish();
+  else PS.seg = {type: 'click', start: PS.next, end: PS.next + PS.clickBeats};
 }
 
 function renderRun(now) {
@@ -233,6 +237,7 @@ function renderRun(now) {
 
 async function pulseFinish() {
   if (!PS.active) return;
+  if (PS.pending) judge(Infinity);  // a silence that already ran its course, still waiting on its last beats
   PS.active = false; clearInterval(PS.timer); wake(false); pulseAudio.close();
   const id = PS.id; PS.id = null;
   let res = null;

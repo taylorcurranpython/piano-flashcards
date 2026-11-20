@@ -4,10 +4,12 @@ getUserMedia is replaced by a WebAudio stream the test controls. A player schedu
 (a clap) at each beat the policy asks for, so the real path runs: AudioWorklet clap detection, latency
 calibration from the clapped-along stretch, judging silent beats, the click returning, rounds saved per tempo.
 Short stretches via ?pulse_click=4&pulse_silent=6&pulse_minutes=0.5.
-Three runs at 80 bpm:
+Runs at 80 bpm:
   1. steady: clap every beat on time -> every silence held, each next one 5 s longer
   2. stop: stop clapping when the click stops -> the click is back after 4 beats, 0 s held
   3. drag: in silence each clap lands 12 ms later than the last -> held a few seconds, then lost, "drags"
+and at 120 bpm with 150 ms of mic latency (claps heard late, calibrated away):
+  4. tail: miss the last 4 beats of each 6 s silence -> lost at 4 s, never counted as held
 Needs: pip install playwright && playwright install chromium (or CHROME=/path/to/chrome).
 Run:  python -m tests.e2e_pulse
 """
@@ -58,10 +60,11 @@ POLICIES = {
     "steady": "(k, i) => 0",
     "stop": "(k, i) => i == null ? 0 : null",
     "drag": "(k, i) => i == null ? 0 : 0.012 * (i + 1)",
+    "tail": "(k, i) => i != null && i >= 8 ? null : 0.15",
 }
 
 
-def run(browser, base, name):
+def run(browser, base, name, bpm=80):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     page.add_init_script(CLAPPER)
     errors = []
@@ -71,7 +74,7 @@ def run(browser, base, name):
     page.click("#tokenForm button")
     page.click("#modePulse")
     page.wait_for_selector("#pulseHome:not(.hidden) .tempo")
-    page.click(".tempo[data-bpm='80']")
+    page.click(f".tempo[data-bpm='{bpm}']")
     page.evaluate(f"window.__clapAlong({POLICIES[name]})")
     page.click("#pStart")
     page.wait_for_selector("#pulseRun:not(.hidden)")
@@ -109,6 +112,9 @@ def main():
                 drag = run(browser, base, "drag")
                 lost = [r for r in drag if not r["completed"]]
                 assert lost and all(1 <= r["held_s"] <= 6 and r["mean_offset_ms"] > 0 for r in lost), drag
+                tail = run(browser, base, "tail", bpm=120)
+                assert all(not r["completed"] and r["held_s"] == 4 and r["target_s"] == 6 for r in tail), tail
+                assert all(abs(r["mean_offset_ms"]) <= 25 for r in tail), tail
                 browser.close()
             req = urllib.request.Request(f"{base}/api/pulse/state", headers={"x-access-token": TOKEN})
             t80 = next(t for t in json.load(urllib.request.urlopen(req))["tempos"] if t["bpm"] == 80)

@@ -51,6 +51,24 @@ select,input[type=password],input[type=text]{font:inherit;padding:10px;border-ra
 table{width:100%;border-collapse:collapse;font-size:.9rem;font-variant-numeric:tabular-nums}
 td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line)}
 .big{font-size:1.6rem;font-weight:700}
+.modes{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.modes button{border-radius:0;background:transparent;color:var(--ink);padding:6px 12px;font-size:.85rem}
+.modes button.sel{background:var(--accent);color:var(--bg)}
+body[data-mode=pulse] #statsBtn,body[data-mode=pulse] #micBtn{display:none}
+.tempos{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
+.tempo{text-align:center;border-left-width:6px}
+.tempo.Easy{border-left-color:var(--easy)} .tempo.Good{border-left-color:var(--good)} .tempo.Hard{border-left-color:var(--hard)} .tempo.Again{border-left-color:var(--bad)}
+.tempo.sel{border-color:var(--accent)}
+#pStage{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center}
+#pPhase{font-size:1.3rem;font-weight:700}
+.dots{display:flex;gap:40px}
+.dot{width:72px;height:72px;border-radius:50%;border:3px solid var(--line);transition:background .05s}
+.dot.beat.on{background:var(--accent);border-color:var(--accent)}
+.dot.clap.on{background:var(--good);border-color:var(--good)}
+.dotlbl{gap:40px;justify-content:center}.dotlbl span{width:72px}
+#pulseRun[data-phase=silent] .dot.beat{opacity:.25}
+#pOff{min-height:1.4rem;font-variant-numeric:tabular-nums}
+#pOff.ok{color:var(--easy)} #pOff.bad{color:var(--bad)}
 </style>
 </head>
 <body>
@@ -58,6 +76,7 @@ td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line)}
   <header>
     <h1>Piano flashcards</h1>
     <div class="row">
+      <div class="modes" role="tablist"><button id="modeNotes" class="sel">Notes</button><button id="modePulse">Pulse</button></div>
       <button class="ghost small" id="statsBtn">Stats</button>
       <button class="ghost small" id="micBtn">Voice: off</button>
     </div>
@@ -107,6 +126,43 @@ td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line)}
     <div class="row" style="margin-top:12px"><button id="practiceBtn">Keep practicing</button><button class="ghost" id="homeBtn">Home</button></div>
   </section>
 
+  <section id="pulseHome" class="hidden">
+    <div class="panel">
+      <h2>Tempo (bpm)</h2>
+      <div class="tempos" id="pTempos"></div>
+      <p class="muted" id="pSuggest"></p>
+      <div class="row"><label class="muted" for="pMinutes">Session length</label><select id="pMinutes"></select></div>
+    </div>
+    <div class="row"><button id="pStart" style="flex:1">Start</button></div>
+    <p class="muted" id="pulseMsg"></p>
+    <p class="muted">Four clicks to listen to, then clap along. Then the click stops and the mic listens: keep clapping on the beat.
+      Four beats in a row missed or more than a tenth of a beat off bring the click back. Hold a whole silence and the next one is longer.
+      Use the speaker, not headphones. <span id="pFirst"></span></p>
+    <div class="panel"><h2>By tempo</h2><table id="pTable"></table></div>
+  </section>
+
+  <section id="pulseRun" class="hidden">
+    <div id="pStage">
+      <div class="meta"><span id="pBpm"></span><span id="pLeft"></span></div>
+      <div id="pPhase"></div>
+      <div class="dots"><div id="pBeat" class="dot beat"></div><div id="pClap" class="dot clap"></div></div>
+      <div class="row muted dotlbl"><span>click</span><span>clap heard</span></div>
+      <div id="pHeld" class="big"></div>
+      <div id="pOff"></div>
+      <div id="pRounds" class="muted"></div>
+      <p id="pMsg" class="muted"></p>
+      <button class="ghost small" id="pEnd">End session</button>
+    </div>
+  </section>
+
+  <section id="pulseDone" class="panel hidden">
+    <h2>Pulse session done</h2>
+    <p class="big" id="pDoneHead"></p>
+    <p class="muted" id="pDoneSub"></p>
+    <table id="pDoneTbl"></table>
+    <div class="row" style="margin-top:12px"><button id="pAgain">Practice again</button><button class="ghost" id="pHomeBtn">Tempos</button></div>
+  </section>
+
   <section id="statsView" class="hidden">
     <div class="legend"><span><i style="background:var(--easy)"></i>&lt;1s</span><span><i style="background:var(--good)"></i>1–2s</span>
       <span><i style="background:var(--hard)"></i>&gt;2s</span><span><i style="background:var(--bad)"></i>last answer wrong</span><span><i style="background:var(--new)"></i>not seen</span></div>
@@ -119,5 +175,6 @@ td,th{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line)}
 <script src="vendor/vexflow.js"></script>
 <script src="vendor/vosk.js"></script>
 <script src="drill.js"></script>
+<script src="pulse.js"></script>
 </body>
 </html>

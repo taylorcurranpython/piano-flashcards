@@ -4,13 +4,21 @@
 // and re-inserts missed/slow cards later in the same session.
 const $ = id => document.getElementById(id);
 const LETTERS = 'CDEFGAB';
-const VIEWS = ['tokenView', 'homeView', 'drillView', 'doneView', 'statsView'];
+const VIEWS = ['tokenView', 'homeView', 'drillView', 'doneView', 'statsView', 'pulseHome', 'pulseRun', 'pulseDone'];
 const params = new URLSearchParams(location.search);
 let token = localStorage.getItem('pf_token') || '';
 let cards = [], byId = {}, cfg = {easy_ms: 1000, good_ms: 2000};
 let scopes = [], scope = null;
 
 function show(v) { VIEWS.forEach(x => $(x).classList.toggle('hidden', x !== v)); }
+// Two modes share the page and the server: note flashcards and the internal pulse drill (pulse.js).
+function setMode(m) {
+  localStorage.setItem('pf_mode', m); document.body.dataset.mode = m;
+  $('modeNotes').classList.toggle('sel', m === 'notes'); $('modePulse').classList.toggle('sel', m === 'pulse');
+}
+const modeHome = () => localStorage.getItem('pf_mode') === 'pulse' ? pulseHome() : home();
+$('modeNotes').onclick = () => { if (!S.active && !PS.active) home(); };
+$('modePulse').onclick = () => { if (!S.active && !PS.active) pulseHome(); };
 
 // ---- API
 async function api(path, body) {
@@ -399,13 +407,13 @@ $('micBtn').onclick = () => {
 
 // ---- boot
 async function home() {
-  show('homeView');
+  setMode('notes'); show('homeView');
   try { await loadState(); } catch (e) { if (e.message !== 'unauthorized') $('homeMsg').textContent = 'Could not load: ' + e.message; return; }
   renderScopes(); fillCustom();
 }
 $('tokenForm').onsubmit = async e => {
   e.preventDefault(); token = $('tokenInput').value.trim();
-  try { await loadState(); localStorage.setItem('pf_token', token); $('tokenErr').textContent = ''; home(); }
+  try { await loadState(); localStorage.setItem('pf_token', token); $('tokenErr').textContent = ''; modeHome(); }
   catch (err) { $('tokenErr').textContent = 'That token did not work.'; }
 };
-home();
+document.addEventListener('DOMContentLoaded', modeHome);

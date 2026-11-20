@@ -12,6 +12,13 @@ letter. The app times how fast you *start* answering and uses that to schedule w
 - **History:** every answer is stored with its time. Stats shows median time and accuracy per note.
 - **Voice:** offline [Vosk](https://github.com/ccoreilly/vosk-browser) in the browser (~40 MB model, downloaded once
   per device). `?engine=browser` uses the browser's own speech recognition instead. A–G keys also work on a laptop.
+- **Pulse mode:** an internal-pulse drill, under the Pulse tab. Clap along with a metronome (~20 s), then the click
+  stops and the mic keeps judging your claps against the beat. Four beats in a row missed or more than a tenth of a
+  beat off bring the click back; hold a whole silence and the next one is 5 s longer (up to 90 s). Sessions are 3–5
+  minutes at 40–120 bpm. Each silence is stored per tempo (seconds held, rushing or dragging), and the app suggests
+  the tempo that is weakest or least recently practiced; tempos you hold well start with a longer silence.
+  Claps only, through the speaker (no headphones: the mic hears the click too). `?pulse_click=4&pulse_silent=6&pulse_minutes=1`
+  shortens everything for testing.
 
 ## Run it
 
@@ -54,12 +61,17 @@ there because every Vercel URL is HTTPS.
 pip install -r requirements-dev.txt
 python -m tests.test_api      # catalog, grading, FSRS scheduling, auth
 python -m tests.e2e_voice     # needs Chrome: CHROME=/path/to/chrome or `playwright install chromium`
+python -m tests.e2e_pulse     # pulse drill with synthetic claps (same Chrome)
 ```
 
 `e2e_voice` plays recorded spoken note names (`tests/audio/`) into headless Chrome as its microphone. It runs the real
 recognition, checks every grade, and checks that each recorded time matches when the speech actually started.
+`e2e_pulse` plays synthetic claps as the microphone: steady (every silence held and growing), stopping when the click
+stops (click back after 4 beats), and drifting late (lost after a few seconds, "drags").
 
 ## Layout
 
 `app/drill.py` cards, grading, FSRS · `app/server.py` API (`/api/state`, `/api/practice`, `/api/answer`,
-`/api/finish`) and static files · `public/` the page (VexFlow draws the staff, Vosk does voice).
+`/api/finish`) and static files · `public/` the page (VexFlow draws the staff, Vosk does voice) ·
+`app/pulse.py` pulse history and tempo suggestion (`/api/pulse/*`) · `public/pulse.js`, `public/pulse-worklet.js` the
+pulse drill (click scheduling and mic clap detection on one AudioContext clock).
